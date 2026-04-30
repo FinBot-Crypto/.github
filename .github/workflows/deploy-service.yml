@@ -1,0 +1,88 @@
+# =============================================================
+# FinBot-Crypto — Pipeline Compartilhado de Deploy
+# =============================================================
+# Workflow reutilizável para todos os microserviços da org.
+# Cada repo chama este workflow passando o nome do serviço.
+#
+# Uso no repo do serviço (.github/workflows/deploy.yml):
+#   jobs:
+#     deploy:
+#       uses: FinBot-Crypto/.github/.github/workflows/deploy-service.yml@main
+#       with:
+#         service_name: fb-market-selection
+#       secrets: inherit
+# =============================================================
+
+name: Deploy Service to VPS
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "Nome do serviço (ex: fb-market-selection)"
+        required: true
+        type: string
+      compose_service:
+        description: "Nome do serviço no docker-compose (default: derivado do service_name sem prefixo fb-)"
+        required: false
+        type: string
+        default: ""
+      vps_base_path:
+        description: "Caminho base na VPS"
+        required: false
+        type: string
+        default: "~/crypto-bot"
+
+jobs:
+  deploy:
+    name: "Deploy ${{ inputs.service_name }}"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to Oracle VPS via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_SSH_HOST }}
+          username: ${{ secrets.VPS_SSH_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+
+            SERVICE="${{ inputs.service_name }}"
+            BASE="${{ inputs.vps_base_path }}"
+            SERVICE_DIR="${BASE}/services/${SERVICE}"
+            REPO_URL="https://github.com/FinBot-Crypto/${SERVICE}.git"
+
+            # Derivar nome do compose service (fb-market-selection -> market-selection)
+            COMPOSE_SVC="${{ inputs.compose_service }}"
+            if [ -z "$COMPOSE_SVC" ]; then
+              COMPOSE_SVC=$(echo "$SERVICE" | sed 's/^fb-//')
+            fi
+
+            echo "=== Deploy: ${SERVICE} ==="
+            echo "  Dir:     ${SERVICE_DIR}"
+            echo "  Compose: ${COMPOSE_SVC}"
+            echo ""
+
+            # 1. Clone ou Pull
+            mkdir -p "${SERVICE_DIR}"
+            cd "${SERVICE_DIR}"
+
+            if [ ! -d ".git" ]; then
+              echo ">> Clonando ${REPO_URL}..."
+              git clone "${REPO_URL}" .
+            else
+              echo ">> Atualizando (git pull)..."
+              git pull origin main
+            fi
+
+            # 2. Build e restart do container
+            cd "${BASE}"
+            docker compose up -d --build --no-deps "${COMPOSE_SVC}"
+
+            # 3. Verificação rápida
+            sleep 3
+            docker compose ps "${COMPOSE_SVC}"
+
+            echo ""
+            echo "=== ✅ Deploy de ${SERVICE} concluído ==="

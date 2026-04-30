@@ -31,7 +31,7 @@ on:
         description: "Caminho base na VPS"
         required: false
         type: string
-        default: "~/crypto-bot"
+        default: "/root/crypto-bot"
 
 jobs:
   deploy:

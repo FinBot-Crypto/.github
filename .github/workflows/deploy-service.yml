@@ -36,6 +36,8 @@ jobs:
   deploy:
     name: "Deploy ${{ inputs.service_name }}"
     runs-on: ubuntu-latest
+    permissions:
+      packages: read
 
     steps:
       - name: Validate Secrets
@@ -63,6 +65,10 @@ jobs:
             echo "=== Deploy: ${SERVICE} (compose: ${COMPOSE_SVC}) ==="
 
             cd "${BASE}"
+
+            # GHCR login (GITHUB_TOKEN passed via secrets)
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin 2>/dev/null || true
+
             docker compose pull "${COMPOSE_SVC}"
             docker compose up -d --no-deps "${COMPOSE_SVC}"
             sleep 2

@@ -1,16 +1,15 @@
 # =============================================================
 # FinBot-Crypto — Pipeline Compartilhado de Deploy
 # =============================================================
-# Workflow reutilizável para todos os microserviços da org.
-# Cada repo chama este workflow passando o nome do serviço.
+# Workflow reutilizável: faz pull da imagem no GHCR e sobe o container.
+# O BUILD + PUSH é feito pelo deploy.yml de cada serviço.
 #
-# Uso no repo do serviço (.github/workflows/deploy.yml):
-#   jobs:
-#     deploy:
-#       uses: FinBot-Crypto/.github/.github/workflows/deploy-service.yml@main
-#       with:
-#         service_name: fb-market-selection
-#       secrets: inherit
+# Uso no repo do serviço:
+#   deploy:
+#     uses: FinBot-Crypto/.github/.github/workflows/deploy-service.yml@main
+#     with:
+#       service_name: fb-execution
+#     secrets: inherit
 # =============================================================
 
 name: Deploy Service to VPS
@@ -23,7 +22,7 @@ on:
         required: true
         type: string
       compose_service:
-        description: "Nome do serviço no docker-compose (default: derivado do service_name sem prefixo fb-)"
+        description: "Nome no docker-compose (default: sem prefixo fb-)"
         required: false
         type: string
         default: ""
@@ -41,21 +40,12 @@ jobs:
     steps:
       - name: Validate Secrets
         run: |
-          if [ -z "${{ secrets.VPS_SSH_HOST }}" ]; then
-            echo "::error::VPS_SSH_HOST secret is empty or not passed."
-            exit 1
-          fi
-          if [ -z "${{ secrets.VPS_SSH_USER }}" ]; then
-            echo "::error::VPS_SSH_USER secret is empty or not passed."
-            exit 1
-          fi
-          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then
-            echo "::error::VPS_SSH_KEY secret is empty or not passed."
-            exit 1
-          fi
-          echo "Secrets are present."
+          if [ -z "${{ secrets.VPS_SSH_HOST }}" ]; then echo "::error::VPS_SSH_HOST missing"; exit 1; fi
+          if [ -z "${{ secrets.VPS_SSH_USER }}" ]; then echo "::error::VPS_SSH_USER missing"; exit 1; fi
+          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then echo "::error::VPS_SSH_KEY missing"; exit 1; fi
+          echo "Secrets OK"
 
-      - name: Deploy to Oracle VPS via SSH
+      - name: Deploy to Oracle VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_SSH_HOST }}
@@ -63,42 +53,19 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           script: |
             set -e
-
             SERVICE="${{ inputs.service_name }}"
             BASE="${{ inputs.vps_base_path }}"
-            SERVICE_DIR="${BASE}/services/${SERVICE}"
-            REPO_URL="https://github.com/FinBot-Crypto/${SERVICE}.git"
-
-            # Derivar nome do compose service (fb-market-selection -> market-selection)
             COMPOSE_SVC="${{ inputs.compose_service }}"
             if [ -z "$COMPOSE_SVC" ]; then
               COMPOSE_SVC=$(echo "$SERVICE" | sed 's/^fb-//')
             fi
 
-            echo "=== Deploy: ${SERVICE} ==="
-            echo "  Dir:     ${SERVICE_DIR}"
-            echo "  Compose: ${COMPOSE_SVC}"
-            echo ""
+            echo "=== Deploy: ${SERVICE} (compose: ${COMPOSE_SVC}) ==="
 
-            # 1. Clone ou Pull
-            mkdir -p "${SERVICE_DIR}"
-            cd "${SERVICE_DIR}"
-
-            if [ ! -d ".git" ]; then
-              echo ">> Clonando ${REPO_URL}..."
-              git clone "${REPO_URL}" .
-            else
-              echo ">> Atualizando (git pull)..."
-              git pull origin main
-            fi
-
-            # 2. Build e restart do container
             cd "${BASE}"
-            docker compose up -d --build --no-deps "${COMPOSE_SVC}"
-
-            # 3. Verificação rápida
-            sleep 3
+            docker compose pull "${COMPOSE_SVC}"
+            docker compose up -d --no-deps "${COMPOSE_SVC}"
+            sleep 2
             docker compose ps "${COMPOSE_SVC}"
 
-            echo ""
             echo "=== ✅ Deploy de ${SERVICE} concluído ==="

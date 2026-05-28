@@ -1,17 +1,10 @@
 # =============================================================
 # FinBot-Crypto — Pipeline Compartilhado de Deploy
 # =============================================================
-# Único workflow para todos os serviços:
-#   → Build ARM64 → Push Docker Hub → Deploy VPS
+# Roda no self-hosted runner da VPS Oracle.
+# Build nativo ARM64, sem registry, deploy direto.
 #
-# Secrets necessários na organização:
-#   DOCKERHUB_USERNAME  (ex: finbotcrypto)
-#   DOCKERHUB_TOKEN     (PAT do Docker Hub)
-#   VPS_SSH_HOST
-#   VPS_SSH_USER
-#   VPS_SSH_KEY
-#
-# Uso no repo do serviço (.github/workflows/deploy.yml):
+# Uso no repo do serviço:
 #   jobs:
 #     deploy:
 #       uses: FinBot-Crypto/.github/.github/workflows/deploy-service.yml@main
@@ -20,7 +13,7 @@
 #       secrets: inherit
 # =============================================================
 
-name: Build, Push & Deploy to VPS
+name: Build & Deploy on VPS
 
 on:
   workflow_call:
@@ -40,57 +33,40 @@ on:
         default: "/root/crypto-bot"
 
 jobs:
-  build-push-deploy:
+  build-deploy:
     name: "${{ inputs.service_name }}"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, arm64]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Derive compose name
+        id: compose
+        run: |
+          COMPOSE_SVC="${{ inputs.compose_service }}"
+          if [ -z "$COMPOSE_SVC" ]; then
+            COMPOSE_SVC=$(echo "${{ inputs.service_name }}" | sed 's/^fb-//')
+          fi
+          echo "compose_svc=$COMPOSE_SVC" >> $GITHUB_OUTPUT
 
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and Deploy
+        working-directory: ${{ inputs.vps_base_path }}
+        run: |
+          set -e
+          SERVICE="${{ inputs.service_name }}"
+          COMPOSE_SVC="${{ steps.compose.outputs.compose_svc }}"
+          SERVICE_DIR="${{ inputs.vps_base_path }}/services/${SERVICE}"
 
-      - name: Build and Push (ARM64)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          platforms: linux/arm64
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.service_name }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          echo "=== Deploy: ${SERVICE} (compose: ${COMPOSE_SVC}) ==="
 
-      - name: Deploy to VPS
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_SSH_HOST }}
-          username: ${{ secrets.VPS_SSH_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            set -e
-            SERVICE="${{ inputs.service_name }}"
-            BASE="${{ inputs.vps_base_path }}"
-            COMPOSE_SVC="${{ inputs.compose_service }}"
-            if [ -z "$COMPOSE_SVC" ]; then
-              COMPOSE_SVC=$(echo "$SERVICE" | sed 's/^fb-//')
-            fi
+          # Copiar código fonte para o diretório do serviço
+          mkdir -p "${SERVICE_DIR}"
+          rsync -a --delete "$GITHUB_WORKSPACE/" "${SERVICE_DIR}/"
 
-            echo "=== Deploy: ${SERVICE} (compose: ${COMPOSE_SVC}) ==="
+          # Build e restart
+          docker compose up -d --build --no-deps "${COMPOSE_SVC}"
+          sleep 2
+          docker compose ps "${COMPOSE_SVC}"
 
-            cd "${BASE}"
-
-            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-            docker compose pull "${COMPOSE_SVC}"
-            docker compose up -d --no-deps "${COMPOSE_SVC}"
-            sleep 2
-            docker compose ps "${COMPOSE_SVC}"
-
-            echo "=== ✅ Deploy de ${SERVICE} concluído ==="
+          echo "=== ✅ Deploy de ${SERVICE} concluído ==="

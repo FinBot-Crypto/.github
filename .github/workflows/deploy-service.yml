@@ -1,53 +1,73 @@
 # =============================================================
 # FinBot-Crypto — Pipeline Compartilhado de Deploy
 # =============================================================
-# Workflow reutilizável: faz pull da imagem no GHCR e sobe o container.
-# O BUILD + PUSH é feito pelo deploy.yml de cada serviço.
+# Único workflow para todos os serviços:
+#   → Build ARM64 → Push Docker Hub → Deploy VPS
 #
-# Uso no repo do serviço:
-#   deploy:
-#     uses: FinBot-Crypto/.github/.github/workflows/deploy-service.yml@main
-#     with:
-#       service_name: fb-execution
-#     secrets: inherit
+# Secrets necessários na organização:
+#   DOCKERHUB_USERNAME  (ex: finbotcrypto)
+#   DOCKERHUB_TOKEN     (PAT do Docker Hub)
+#   VPS_SSH_HOST
+#   VPS_SSH_USER
+#   VPS_SSH_KEY
+#
+# Uso no repo do serviço (.github/workflows/deploy.yml):
+#   jobs:
+#     deploy:
+#       uses: FinBot-Crypto/.github/.github/workflows/deploy-service.yml@main
+#       with:
+#         service_name: fb-execution
+#       secrets: inherit
 # =============================================================
 
-name: Deploy Service to VPS
+name: Build, Push & Deploy to VPS
 
 on:
   workflow_call:
     inputs:
       service_name:
-        description: "Nome do serviço (ex: fb-market-selection)"
         required: true
         type: string
+        description: "Nome do serviço (ex: fb-execution)"
       compose_service:
-        description: "Nome no docker-compose (default: sem prefixo fb-)"
         required: false
         type: string
         default: ""
+        description: "Nome no docker-compose (default: sem prefixo fb-)"
       vps_base_path:
-        description: "Caminho base na VPS"
         required: false
         type: string
         default: "/root/crypto-bot"
 
 jobs:
-  deploy:
-    name: "Deploy ${{ inputs.service_name }}"
+  build-push-deploy:
+    name: "${{ inputs.service_name }}"
     runs-on: ubuntu-latest
-    permissions:
-      packages: read
 
     steps:
-      - name: Validate Secrets
-        run: |
-          if [ -z "${{ secrets.VPS_SSH_HOST }}" ]; then echo "::error::VPS_SSH_HOST missing"; exit 1; fi
-          if [ -z "${{ secrets.VPS_SSH_USER }}" ]; then echo "::error::VPS_SSH_USER missing"; exit 1; fi
-          if [ -z "${{ secrets.VPS_SSH_KEY }}" ]; then echo "::error::VPS_SSH_KEY missing"; exit 1; fi
-          echo "Secrets OK"
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Deploy to Oracle VPS
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push (ARM64)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/arm64
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/${{ inputs.service_name }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_SSH_HOST }}
@@ -66,8 +86,7 @@ jobs:
 
             cd "${BASE}"
 
-            # GHCR login (GITHUB_TOKEN passed via secrets)
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.repository_owner }}" --password-stdin 2>/dev/null || true
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
             docker compose pull "${COMPOSE_SVC}"
             docker compose up -d --no-deps "${COMPOSE_SVC}"
